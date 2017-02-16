@@ -501,7 +501,7 @@ def uninstall_mom():
     delete_zk_node('universe/marathon-user')
 
 
-def wait_for_marathon_up(test_obj):
+def wait_for_marathon_up(test_obj=None):
     if test_obj is None or 'root' in test_obj.mom:
         wait_for_service_endpoint('marathon')
     else:
@@ -555,22 +555,94 @@ def is_mom_version(version):
     return same_version
 
 
+class DCOSScaleException(DCOSException):
+
+    def __init__(self, message):
+        self.message = message
+
+    def message(self):
+        return self.message
+
+    def __str__(self):
+        return self.message
+
+
+class LaunchResults(object):
+
+    def __init__(self):
+        self.failure = False
+        self.avg_response_time = 0.0
+        self.last_response_time = 0.0
+
+    def __str__(self):
+        return "launch  failure: {} avg response time: {} last response time: {}".format(
+            self.failure,
+            self.avg_response_time,
+            self.last_response_time)
+
+    def __repr__(self):
+        return "launch  failure: {} avg response time: {} last response time: {}".format(
+            self.failure,
+            self.avg_response_time,
+            self.last_response_time)
+
+
+class DeployResults(object):
+
+    def __init__(self, target):
+        self.failure = False
+        self.avg_reponse_time = 0.0
+        self.last_response_time = 0.0
+        self.current_scale = 0
+        self.target = target
+
+    def __str__(self):
+        return "deploy  failure: {} avg response time: {} last response time: {} scale: {}".format(
+            self.failure,
+            self.avg_response_time,
+            self.last_response_time,
+            self.current_scale)
+
+    def __repr__(self):
+        return "deploy  failure: {} avg response time: {} last response time: {} scale: {}".format(
+            self.failure,
+            self.avg_response_time,
+            self.last_response_time,
+            self.current_scale)
+
+    def set_current_scale(self, task_count):
+        # if task_count < current_scale exception
+        if self.current_scale > task_count:
+            raise DCOSScaleException('Scaling Failed:  Previous scale: {}, Current scale: {}'.format(
+                self.current_scale,
+                task_count))
+        self.current_scale = task_count
+
+
+class UnDeployResults(object):
+
+    def __init__(self):
+        self.failure = False
+        self.avg_reponse_time = 0.0
+        self.last_response_time = 0.0
+
+    def __str__(self):
+        return "undeploy  failure: {} avg response time: {} last response time: {}".format(
+            self.failure,
+            self.avg_response_time,
+            self.last_response_time)
+
+    def __repr__(self):
+        return "undeploy  failure: {} avg response time: {} last response time: {}".format(
+            self.failure,
+            self.avg_response_time,
+            self.last_response_time)
+
+
 class ScaleTest(object):
 
-    name = ''
-    # app, pod
-    under_test = ''
-    # instance, group, count
-    style = ''
-
-    instance = 1
-    count = 1
-    # successful, failed, skipped
-    status = 'running'
-    deploy_time = None
-    undeploy_time = None
-
     def __init__(self, name, mom, under_test, style, count, instance):
+        # test style and criteria
         self.name = name
         self.under_test = under_test
         self.style = style
@@ -579,19 +651,31 @@ class ScaleTest(object):
         self.start = time.time()
         self.mom = mom
         self.events = []
+        self.target = int(instance) * int(count)
+
+        # successful, failed, skipped
+        # failure can happen in any of the test phases below
+        self.status = 'running'
+        self.test_time = None
+        self.undeploy_time = None
+
+        # results are in these objects
+        self.launch_results = LaunchResults()
+        self.deploy_results = DeployResults(self.target)
+        self.undeploy_results = UnDeployResults()
 
     def __str__(self):
         return "test: {} status: {} time: {} events: {}".format(
             self.name,
             self.status,
-            self.deploy_time,
+            self.test_time,
             len(self.events))
 
     def __repr__(self):
         return "test: {} status: {} time: {} events: {}".format(
             self.name,
             self.status,
-            self.deploy_time,
+            self.test_time,
             len(self.events))
 
     def add_event(self, eventInfo):
@@ -603,9 +687,9 @@ class ScaleTest(object):
         """
         self.status = status
         if 'successful' == status:
-            self.deploy_time = elapse_time(self.start)
+            self.test_time = elapse_time(self.start)
         else:
-            self.deploy_time = 'x'
+            self.test_time = 'x'
 
     def successful(self):
         self.add_event('successful')
@@ -628,18 +712,25 @@ class ScaleTest(object):
             print(event)
 
     def log_stats(self):
-        print('    *status*: {}, deploy: {}, undeploy: {}'.format(self.status, self.deploy_time, self.undeploy_time))
+        print('    *status*: {}, deploy: {}, undeploy: {}'.format(self.status, self.test_time, self.undeploy_time))
 
 
 def start_test(name, marathons=None):
     """ test name example: test_mom1_apps_instances_1_100
     with list of marathons to test against.  If marathons are None, the root marathon is tested.
     """
-    test = ScaleTest(name, *name.split("_")[1:])
+    test = create_test_object(*name.split("_")[1:])
     if marathons is None:
         test.mom_version = 'root'
     else:
         test.mom_version = marathons[test.mom]
+    return test
+
+
+def create_test_object(marathon='root', under_test='apps', style='instances', num_apps=1, num_instances=1):
+    test_name = 'test_{}_{}_{}_{}_{}'.format(marathon, under_test, style, num_apps, num_instances)
+    test = ScaleTest(test_name, marathon, under_test, style, num_apps, num_instances)
+    test.mom_version = marathon
     return test
 
 
@@ -653,6 +744,7 @@ def outstanding_deployments():
     """ Provides a count of deployments still looking to land.
     """
     count = 0
+    wait_for_marathon_up()
     client = marathon.create_client()
     queued_apps = client.get_queued_apps()
     for app in queued_apps:
@@ -665,6 +757,7 @@ def current_scale(app_id=None):
     """ Provides a count of tasks which are running on marathon.  The default
         app_id is None which provides a count of all tasks.
     """
+    wait_for_marathon_up()
     client = marathon.create_client()
     tasks = client.get_tasks(app_id)
     return len(tasks)
