@@ -481,7 +481,7 @@ def uninstall_mom():
     max_times = 10
     while not removed:
         try:
-            max_times =- 1
+            max_times = max_times - 1
             client = marathon.create_client()
             client.remove_app('marathon-user')
             deployment_wait()
@@ -553,65 +553,6 @@ def is_mom_version(version):
             else:
                 return False
     return same_version
-
-
-class Resources(object):
-
-    cpus = 0
-    mem = 0
-
-    def __init__(self, cpus=0, mem=0):
-        self.cpus = cpus
-        self.mem = mem
-
-    def __str__(self):
-        return "cpus: {}, mem: {}".format(self.cpus, self.mem)
-
-    def __repr__(self):
-        return "cpus: {}, mem: {}".format(self.cpus, self.mem)
-
-    def __sub__(self, other):
-        total_cpu = self.cpus - other.cpus
-        total_mem = self.mem - other.mem
-
-        return Resources(total_cpu, total_mem)
-
-    def __rsub__(self, other):
-        return self.__sub__(other)
-
-    def __gt__(self, other):
-        return self.cpus > other.cpus and self.mem > other.cpus
-
-    def __mul__(self, other):
-        return Resources(self.cpus * other, self.mem * other)
-
-    def __rmul__(self, other):
-        return Resources(self.cpus * other, self.mem * other)
-
-
-def get_resources(rtype='resources'):
-    """ resource types from summary include:  resources, used_resources
-    offered_resources, reserved_resources, unreserved_resources
-    This current returns resources
-    """
-    cpus = 0
-    mem = 0
-    summary = DCOSClient().get_state_summary()
-
-    if 'slaves' in summary:
-        agents = summary.get('slaves')
-        for agent in agents:
-            cpus += agent[rtype]['cpus']
-            mem += agent[rtype]['mem']
-
-    return Resources(cpus, mem)
-
-
-def available_resources():
-    res = get_resources()
-    used = get_resources('used_resources')
-
-    return res - used
 
 
 class ScaleTest(object):
@@ -702,13 +643,28 @@ def start_test(name, marathons=None):
     return test
 
 
-def resource_need(instances=1, counts=1, app_cpu=0.01, app_mem=1):
-    total_tasks = instances * counts
-    total_cpu = app_cpu * total_tasks
-    total_mem = app_mem * total_tasks
-    return Resources(total_cpu, total_mem)
-
-
 def scaletest_resources(test_obj):
-    return resource_need(test_obj.instance,
-                         test_obj.count)
+    return resources_needed(
+        test_obj.instance,
+        test_obj.count)
+
+
+def outstanding_deployments():
+    """ Provides a count of deployments still looking to land.
+    """
+    count = 0
+    client = marathon.create_client()
+    queued_apps = client.get_queued_apps()
+    for app in queued_apps:
+        count = count + app['count']
+
+    return count
+
+
+def current_scale(app_id=None):
+    """ Provides a count of tasks which are running on marathon.  The default
+        app_id is None which provides a count of all tasks.
+    """
+    client = marathon.create_client()
+    tasks = client.get_tasks(app_id)
+    return len(tasks)
