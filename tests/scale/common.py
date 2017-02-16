@@ -569,32 +569,51 @@ class DCOSScaleException(DCOSException):
 
 class LaunchResults(object):
 
-    def __init__(self):
-        self.failure = False
+    def __init__(self, this_test):
+        self.success = True
         self.avg_response_time = 0.0
         self.last_response_time = 0.0
+        self.start = this_test.start
+        self.current_test = this_test
 
     def __str__(self):
-        return "launch  failure: {} avg response time: {} last response time: {}".format(
-            self.failure,
+        return "launch  success: {} avg response time: {} last response time: {}".format(
+            self.success,
             self.avg_response_time,
             self.last_response_time)
 
     def __repr__(self):
         return "launch  failure: {} avg response time: {} last response time: {}".format(
-            self.failure,
+            self.success,
             self.avg_response_time,
             self.last_response_time)
+
+    def current_response_time(self, response_time):
+        if response_time > 0.0:
+            self.last_response_time = response_time
+            if self.avg_response_time == 0.0:
+                self.avg_response_time = response_time
+            else:
+                self.avg_response_time = (self.avg_response_time + response_time)/2
+
+    def complete(self):
+        self.current_response_time(time.time())
+        self.current_test.add_event('launch successful')
+
+    def failure(self, message=''):
+        self.success = False
+        self.current_test.add_event('launch failed due to: {}'.format(message))
 
 
 class DeployResults(object):
 
-    def __init__(self, target):
-        self.failure = False
-        self.avg_reponse_time = 0.0
+    def __init__(self, this_test):
+        self.success = True
+        self.avg_response_time = 0.0
         self.last_response_time = 0.0
         self.current_scale = 0
-        self.target = target
+        self.target = this_test.target
+        self.start = this_test.start
 
     def __str__(self):
         return "deploy  failure: {} avg response time: {} last response time: {} scale: {}".format(
@@ -605,7 +624,7 @@ class DeployResults(object):
 
     def __repr__(self):
         return "deploy  failure: {} avg response time: {} last response time: {} scale: {}".format(
-            self.failure,
+            self.success,
             self.avg_response_time,
             self.last_response_time,
             self.current_scale)
@@ -618,28 +637,47 @@ class DeployResults(object):
                 task_count))
         self.current_scale = task_count
 
+    def current_response_time(self, response_time):
+        if response_time > 0.0:
+            self.last_response_time = response_time
+            if self.avg_response_time == 0.0:
+                self.avg_response_time = response_time
+            else:
+                self.avg_response_time = (self.avg_response_time + response_time)/2
 
 class UnDeployResults(object):
 
-    def __init__(self):
-        self.failure = False
-        self.avg_reponse_time = 0.0
+    def __init__(self, this_test):
+        self.success = True
+        self.avg_response_time = 0.0
         self.last_response_time = 0.0
+        self.start = this_test.start
 
     def __str__(self):
         return "undeploy  failure: {} avg response time: {} last response time: {}".format(
-            self.failure,
+            self.success,
             self.avg_response_time,
             self.last_response_time)
 
     def __repr__(self):
         return "undeploy  failure: {} avg response time: {} last response time: {}".format(
-            self.failure,
+            self.success,
             self.avg_response_time,
             self.last_response_time)
 
 
 class ScaleTest(object):
+    """ Defines a marathon scale test and collects the scale test data.
+        A scale test has 3 phases of interest:  1) launching, 2) deploying and 3) undeploying
+
+        `under_test` defines apps or pods
+        `style` defines instance, count or group
+            instance - is 1 app with X instances (makes 1 http launch call)
+            count - is X apps with Y (often 1) instances each (makes an http launch for each X)
+            group - is X apps in 1 http launch call
+
+        All events are logged in the events array in order.
+    """
 
     def __init__(self, name, mom, under_test, style, count, instance):
         # test style and criteria
@@ -660,9 +698,9 @@ class ScaleTest(object):
         self.undeploy_time = None
 
         # results are in these objects
-        self.launch_results = LaunchResults()
-        self.deploy_results = DeployResults(self.target)
-        self.undeploy_results = UnDeployResults()
+        self.launch_results = LaunchResults(self)
+        self.deploy_results = DeployResults(self)
+        self.undeploy_results = UnDeployResults(self)
 
     def __str__(self):
         return "test: {} status: {} time: {} events: {}".format(
