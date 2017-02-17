@@ -162,7 +162,7 @@ def count_test_app(test_obj):
 
     # time to finish launch
     try:
-        time_deployment2(test_obj, starting_tasks)
+        time_deployment2(test_obj)
         launch_complete = True
     except Exception as e:
         assert False
@@ -208,35 +208,44 @@ def instance_test_app(test_obj):
     :param test_obj: Is of type ScaleTest and defines the criteria for the test and logs the results and events of the test.
     """
 
-    # make sure no apps currently
-    delete_all_apps_wait2()
+    if test_obj.skipped:
+        return
 
-    test_obj.start = time.time()
-    starting_tasks = get_current_tasks()
-    # launch apps
-    launch_complete = True
+    # cleanup
+    # make sure no apps currently
+    wait_for_marathon_up(test_obj)
+    delete_all_apps_wait2()
+    wait_for_marathon_up(test_obj)
+
+    # launch
+    test_obj.start_test()
+    launch_results = test_obj.launch_results
     try:
         launch_apps2(test_obj)
     except:
-        test_obj.failed('Failure to launched (but we still will wait for deploys)')
-        launch_complete = False
+        # TODO: specific times of failures...
+        # service unavail == wait for marathon
+        launch_results.failed('Failure to launched (but we still will wait for deploys)')
         wait_for_marathon_up(test_obj)
-        pass
+    else:
+        launch_results.completed()
 
-    # time launch
+    # deployment
     try:
-        time_deployment2(test_obj, starting_tasks)
-        launch_complete = True
+        time_deployment2(test_obj)
     except Exception as e:
+        print(e)
         assert False
 
-    current_tasks = get_current_app_tasks(starting_tasks)
+    # TODO: protect this!
+    current_tasks = current_scale()
     test_obj.add_event('undeploying {} tasks'.format(current_tasks))
 
-    # delete apps
+    # undeploy
+    # TODO: wait time for marathon up calc
+    wait_for_marathon_up(test_obj)
     delete_all_apps_wait2(test_obj)
-
-    assert launch_complete
+    wait_for_marathon_up(test_obj)
 
 
 def group_test_app(test_obj):
@@ -272,7 +281,7 @@ def group_test_app(test_obj):
 
     # time launch
     try:
-        time_deployment2(test_obj, starting_tasks)
+        time_deployment2(test_obj)
         launch_complete = True
     except Exception as e:
         assert False
@@ -335,34 +344,95 @@ def undeployment_wait(test_obj=None):
         test_obj.undeploy_complete(start)
 
 
-def time_deployment2(test_obj, starting_tasks):
+def time_deployment2(test_obj):
+    # xx
+
+    deploy_results = test_obj.deploy_results
     client = marathon.create_client()
-    target_tasks = starting_tasks + (test_obj.count * test_obj.instance)
-    current_tasks = 0
 
-    deployment_count = 1
+    deploying = True
+    abort = False
     failure_count = 0
-    while deployment_count > 0:
-        # need protection when tearing down
+    loop_count = 0
+    while deploying and not abort:
+        # service available
+        # deploying?
+        # on exception abort
         try:
-            deployments = client.get_deployments()
-            deployment_count = len(deployments)
-            current_tasks = get_current_app_tasks(starting_tasks)
+            # time getting deployments
+            start = time.time()
+            deploying = is_deployment_active()
+            response_time = elapse_time(start, time.time())
 
-            if deployment_count > 0:
-                time.sleep(1)
+            # if done deploying time will be captured on complete
+            if deploying and loop_count % 1000 == 0:
+                deploy_results.current_response_time(response_time)
+
+            # current scale
+            task_count = current_scale()
+            deploy_results.set_current_scale(task_count)
+
+            loop_count = loop_count + 1
+
+            if deploying:
+                time.sleep(calculate_deployment_wait_time(deploy_results))
+                # reset failure count,  it is used for consecutive failures
                 failure_count = 0
+                wait_for_marathon_up(test_obj)
+
+            abort = abort_deployment(test_obj)
+        except DCOSScaleException as e:
+            # current scale is lower than previous scale
+            deploy_results.failed(e.message)
+            abort = True
         except:
             failure_count += 1
             # consecutive failures > x will fail test
             if failure_count > 10:
-                test_obj.failed('Too many failures query for deployments')
+                deploy_results.failed('Too many failures query for deployments')
                 raise TestException()
 
+            time.sleep(calculate_deployment_wait_time(deploy_results, failure_count))
             wait_for_marathon_up(test_obj)
             pass
 
-    test_obj.successful()
+    deploy_results.completed()
+
+
+def abort_deployment(test_obj):
+    """ Returns True if we should abort, otherwise False
+        It looks at things like time duration
+    """
+    return False
+
+
+def calculate_deployment_wait_time(deploy_results, failure_count=0):
+    """ Calculates wait time based potentially a number of factors.
+        If we need an exponential backoff this is the place.
+
+        possbilities:
+            deploy_results.avg_response_time,
+            deploy_results.last_response_time
+            failure_count
+            outstanding_deployments
+            current_scale
+
+        max response time is 10s, as we approach that bad things happen
+
+        return time in seconds to wait
+    """
+    wait_time = 1
+    if deploy_results.last_response_time < 1:
+        wait_time = 1
+    elif deploy_results.last_response_time > 8:
+        wait_time = 5
+
+    if failure_count > 3 and failure_count < 7:
+        wait_time = wait_time + 5
+    elif failure_count > 7:
+        wait_time = wait_time + 10
+
+    return wait_time
 
 
 def scale_apps(count=1, instances=1):
@@ -596,12 +666,13 @@ class LaunchResults(object):
             else:
                 self.avg_response_time = (self.avg_response_time + response_time)/2
 
-    def complete(self):
+    def completed(self):
         self.current_response_time(time.time())
         self.current_test.add_event('launch successful')
 
-    def failure(self, message=''):
+    def failed(self, message=''):
         self.success = False
+        self.current_response_time(time.time())
         self.current_test.add_event('launch failed due to: {}'.format(message))
 
 
@@ -614,6 +685,8 @@ class DeployResults(object):
         self.current_scale = 0
         self.target = this_test.target
         self.start = this_test.start
+        self.current_test = this_test
+
 
     def __str__(self):
         return "deploy  failure: {} avg response time: {} last response time: {} scale: {}".format(
@@ -644,6 +717,21 @@ class DeployResults(object):
                 self.avg_response_time = response_time
             else:
                 self.avg_response_time = (self.avg_response_time + response_time)/2
+
+    def completed(self):
+        self.current_test.successful()
+        self.current_response_time(time.time())
+        self.current_test.add_event('deployment successful')
+        self.current_test.add_event('scale reached: {}'.format(self.current_scale))
+
+
+    def failed(self, message=''):
+        self.current_test.failed()
+        self.success = False
+        self.current_response_time(time.time())
+        self.current_test.add_event('deployment failed due to: {}'.format(message))
+        self.current_test.add_event('scale reached: {}'.format(self.current_scale))
+
 
 class UnDeployResults(object):
 
@@ -677,6 +765,9 @@ class ScaleTest(object):
             group - is X apps in 1 http launch call
 
         All events are logged in the events array in order.
+
+        A "successful" test is one that completed launch and deployment successfully.
+        Undeploys that fail are interesting but do not count towards success of scale test.
     """
 
     def __init__(self, name, mom, under_test, style, count, instance):
@@ -696,6 +787,7 @@ class ScaleTest(object):
         self.status = 'running'
         self.test_time = None
         self.undeploy_time = None
+        self.skipped = False
 
         # results are in these objects
         self.launch_results = LaunchResults(self)
@@ -740,10 +832,18 @@ class ScaleTest(object):
     def skip(self, reason="unknown"):
         self.add_event('skipped: {}'.format(reason))
         self._status('skipped')
+        self.skipped = True
 
     def undeploy_complete(self, start):
         self.add_event('undeployment complete')
         self.undeploy_time = elapse_time(start)
+
+    def start_test(self):
+        start_time = time.time()
+        self.start = start_time
+        self.launch_results.start = start_time
+        self.deploy_results.start = start_time
+        self.undeploy_results.start = start_time
 
     def log_events(self):
         for event in self.events:
@@ -782,7 +882,6 @@ def outstanding_deployments():
     """ Provides a count of deployments still looking to land.
     """
     count = 0
-    wait_for_marathon_up()
     client = marathon.create_client()
     queued_apps = client.get_queued_apps()
     for app in queued_apps:
@@ -790,12 +889,14 @@ def outstanding_deployments():
 
     return count
 
+def is_deployment_active():
+    client = marathon.create_client()
+    return len(client.get_deployments()) > 0
 
 def current_scale(app_id=None):
     """ Provides a count of tasks which are running on marathon.  The default
         app_id is None which provides a count of all tasks.
     """
-    wait_for_marathon_up()
     client = marathon.create_client()
     tasks = client.get_tasks(app_id)
     return len(tasks)
