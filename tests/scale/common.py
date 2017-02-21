@@ -126,7 +126,7 @@ def get_current_tasks():
     try:
         return len(get_tasks())
     except Exception as e:
-        print(e)
+        print(str(e))
         return 0
 
 
@@ -223,7 +223,6 @@ def instance_test_app(test_obj):
     try:
         launch_apps2(test_obj)
     except:
-        # TODO: specific times of failures...
         # service unavail == wait for marathon
         launch_results.failed('Failure to launched (but we still will wait for deploys)')
         wait_for_marathon_up(test_obj)
@@ -234,15 +233,15 @@ def instance_test_app(test_obj):
     try:
         time_deployment2(test_obj)
     except Exception as e:
-        print(e)
-        assert False
+        msg = str(e)
+        print("************ {} *********".format(msg))
+        test_obj.deploy_results.failed(msg)
 
-    # TODO: protect this!
+    wait_for_marathon_up(test_obj)
     current_tasks = current_scale()
     test_obj.add_event('undeploying {} tasks'.format(current_tasks))
 
     # undeploy
-    # TODO: wait time for marathon up calc
     wait_for_marathon_up(test_obj)
     delete_all_apps_wait2(test_obj)
     wait_for_marathon_up(test_obj)
@@ -345,68 +344,96 @@ def undeployment_wait(test_obj=None):
 
 
 def time_deployment2(test_obj):
-    # xx
 
+    after_deploy_timer = None
+    after_deploy_scale = None
     deploy_results = test_obj.deploy_results
     client = marathon.create_client()
 
     deploying = True
     abort = False
     failure_count = 0
-    loop_count = 0
+    test_obj.reset_loop_count()
+
+    scale_failure_count = 0
     while deploying and not abort:
-        # service available
-        # deploying?
-        # on exception abort
         try:
-            # time getting deployments
-            start = time.time()
-            deploying = is_deployment_active()
-            response_time = elapse_time(start, time.time())
 
-            # if done deploying time will be captured on complete
-            if deploying and loop_count % 1000 == 0:
-                deploy_results.current_response_time(response_time)
-
-            # current scale
             task_count = current_scale()
             deploy_results.set_current_scale(task_count)
 
-            loop_count = loop_count + 1
+            deploying = not deploy_results.is_target_reached()
 
             if deploying:
-                time.sleep(calculate_deployment_wait_time(deploy_results))
+                time.sleep(calculate_deployment_wait_time(test_obj))
                 # reset failure count,  it is used for consecutive failures
                 failure_count = 0
-                wait_for_marathon_up(test_obj)
+                quiet_wait_for_marathon_up(test_obj)
 
-            abort = abort_deployment(test_obj)
+            abort = abort_deployment_check(test_obj)
+            scale_failure_count = 0
         except DCOSScaleException as e:
             # current scale is lower than previous scale
-            deploy_results.failed(e.message)
+            msg = str(e)
+            deploy_results.failed(msg)
+            print("************ {} *********".format(msg))
+            scale_failure_count = scale_failure_count + 1
+
+            # 5 tries to see if scale increases, if no abort
+            # 5 consecutive failures
+            if scale_failure_count > 5:
+                deploy_results.failed('Aborting based on too many failures: {}'.format(scale_failure_count))
+                abort = True
+            # need some time
+            else:
+                time.sleep(calculate_scale_wait_time(test_obj, scale_failure_count))
+                quiet_wait_for_marathon_up(test_obj)
+
+        except DCOSNotScalingException as e:
+            msg = str(e)
+            deploy_results.failed(msg)
+            print("************ {} *********".format(msg))
             abort = True
-        except:
-            failure_count += 1
+
+        except Exception as e:
+            msg = str(e)
+            test_obj.add_event(msg)
             # consecutive failures > x will fail test
             if failure_count > 10:
-                deploy_results.failed('Too many failures query for deployments')
-                raise TestException()
+                message = 'Too many failures query for deployments'
+                print("************ {} *********".format(message))
+                deploy_results.failed(message)
+                raise TestException(message)
 
-            time.sleep(calculate_deployment_wait_time(deploy_results, failure_count))
-            wait_for_marathon_up(test_obj)
+            time.sleep(calculate_deployment_wait_time(test_obj, failure_count))
+            quiet_wait_for_marathon_up(test_obj)
             pass
 
-    deploy_results.completed()
+    print('loop count: {}'.format(test_obj.loop_count))
+    if deploy_results.is_target_reached():
+        deploy_results.completed()
+    else:
+        deploy_results.failed('Target NOT reached')
 
 
-def abort_deployment(test_obj):
+def calculate_scale_wait_time(test_obj, failure_count):
+    return failure_count * 10
+
+
+def abort_deployment_check(test_obj):
     """ Returns True if we should abort, otherwise False
         It looks at things like time duration
     """
+    # no test takes longer than 3 hours regardless
+    hours = 3
+    if elapse_time(test_obj.start_time) > hours * 60 * 60:
+        test_obj.add_event("Test taking longer than {} hours".format(hours))
+        return True
+
     return False
 
 
-def calculate_deployment_wait_time(deploy_results, failure_count=0):
+def calculate_deployment_wait_time(test_obj, failure_count=0):
     """ Calculates wait time based potentially a number of factors.
         If we need an exponential backoff this is the place.
 
@@ -421,6 +448,8 @@ def calculate_deployment_wait_time(deploy_results, failure_count=0):
 
         return time in seconds to wait
     """
+    deploy_results = test_obj.deploy_results
+
     wait_time = 1
     if deploy_results.last_response_time < 1:
         wait_time = 1
@@ -571,12 +600,18 @@ def uninstall_mom():
     delete_zk_node('universe/marathon-user')
 
 
-def wait_for_marathon_up(test_obj=None):
+def wait_for_marathon_up(test_obj=None, timeout= 60 * 5):
     if test_obj is None or 'root' in test_obj.mom:
-        wait_for_service_endpoint('marathon')
+        wait_for_service_endpoint('marathon', timeout)
     else:
         wait_for_service_endpoint('marathon-user')
 
+
+def quiet_wait_for_marathon_up(test_obj=None, timeout= 60 * 5):
+    try:
+        wait_for_marathon_up(test_obj, timeout)
+    except:
+        pass
 
 def ensure_test_mom(test_obj):
     valid = ensure_mom_version(test_obj.mom_version)
@@ -637,6 +672,18 @@ class DCOSScaleException(DCOSException):
         return self.message
 
 
+class DCOSNotScalingException(DCOSException):
+
+    def __init__(self, message):
+        self.message = message
+
+    def message(self):
+        return self.message
+
+    def __str__(self):
+        return self.message
+
+
 class LaunchResults(object):
 
     def __init__(self, this_test):
@@ -686,6 +733,7 @@ class DeployResults(object):
         self.target = this_test.target
         self.start = this_test.start
         self.current_test = this_test
+        self.end_time = None
 
 
     def __str__(self):
@@ -703,12 +751,31 @@ class DeployResults(object):
             self.current_scale)
 
     def set_current_scale(self, task_count):
+
+        minutes = 10
+        # initalize timer (it is reset for ever successful increment)
+        if self.current_test.loop_count == 0:
+            self.end_time = time.time() + minutes * 60
+
+        self.current_test.increment_loop_count()
+
         # if task_count < current_scale exception
         if self.current_scale > task_count:
             raise DCOSScaleException('Scaling Failed:  Previous scale: {}, Current scale: {}'.format(
                 self.current_scale,
                 task_count))
-        self.current_scale = task_count
+
+        # if scale hasn't changed set timer.  check timer.
+        if self.current_scale < task_count:
+            self.end_time = time.time() + minutes * 60
+            self.current_scale = task_count
+
+        if time.time() > self.end_time:
+            raise DCOSNotScalingException("Deployment Scale of {} hasn't changed for {} mins".format(task_count, minutes))
+
+
+    def is_target_reached(self):
+        return self.current_scale >= self.target
 
     def current_response_time(self, response_time):
         if response_time > 0.0:
@@ -726,7 +793,7 @@ class DeployResults(object):
 
 
     def failed(self, message=''):
-        self.current_test.failed()
+        self.current_test.failed(message)
         self.success = False
         self.current_response_time(time.time())
         self.current_test.add_event('deployment failed due to: {}'.format(message))
@@ -788,6 +855,7 @@ class ScaleTest(object):
         self.test_time = None
         self.undeploy_time = None
         self.skipped = False
+        self.loop_count = 0
 
         # results are in these objects
         self.launch_results = LaunchResults(self)
@@ -809,17 +877,15 @@ class ScaleTest(object):
             len(self.events))
 
     def add_event(self, eventInfo):
-        self.events.append('    event: {} (time in test: {})'.format(eventInfo, elapse_time(self.start)))
+        self.events.append('    event: {} (time in test: {})'.format(eventInfo, pretty_duration_safe(elapse_time(self.start))))
 
     def _status(self, status):
         """ end of scale test, however still may have events like undeploy_time
         this marks the end of the test time
         """
         self.status = status
-        if 'successful' == status:
+        if 'successful' == status or 'failed' == status:
             self.test_time = elapse_time(self.start)
-        else:
-            self.test_time = 'x'
 
     def successful(self):
         self.add_event('successful')
@@ -845,12 +911,21 @@ class ScaleTest(object):
         self.deploy_results.start = start_time
         self.undeploy_results.start = start_time
 
+    def increment_loop_count(self):
+        self.loop_count = self.loop_count + 1
+
+    def reset_loop_count(self):
+        self.loop_count = 0
+
     def log_events(self):
         for event in self.events:
             print(event)
 
     def log_stats(self):
-        print('    *status*: {}, deploy: {}, undeploy: {}'.format(self.status, self.test_time, self.undeploy_time))
+        print('    *status*: {}, deploy: {}, undeploy: {}'.format(
+            self.status,
+            pretty_duration_safe(self.test_time),
+            pretty_duration_safe(self.undeploy_time)))
 
 
 def start_test(name, marathons=None):
@@ -865,17 +940,15 @@ def start_test(name, marathons=None):
     return test
 
 
-def create_test_object(marathon='root', under_test='apps', style='instances', num_apps=1, num_instances=1):
-    test_name = 'test_{}_{}_{}_{}_{}'.format(marathon, under_test, style, num_apps, num_instances)
-    test = ScaleTest(test_name, marathon, under_test, style, num_apps, num_instances)
-    test.mom_version = marathon
+def create_test_object(marathon_name='root', under_test='apps', style='instances', num_apps=1, num_instances=1):
+    test_name = 'test_{}_{}_{}_{}_{}'.format(marathon_name, under_test, style, num_apps, num_instances)
+    test = ScaleTest(test_name, marathon_name, under_test, style, num_apps, num_instances)
+    test.mom_version = marathon_name
     return test
 
 
 def scaletest_resources(test_obj):
-    return resources_needed(
-        test_obj.instance,
-        test_obj.count)
+    return resources_needed(test_obj.target, .01, 32)
 
 
 def outstanding_deployments():
@@ -889,14 +962,51 @@ def outstanding_deployments():
 
     return count
 
+
 def is_deployment_active():
     client = marathon.create_client()
     return len(client.get_deployments()) > 0
 
-def current_scale(app_id=None):
+def current_scale():
+    """ Provides a count of tasks which are running on Mesos.  The default
+        app_id is None which provides a count of all tasks.
+    """
+    return len(get_active_tasks())
+
+
+def current_marathon_scale(app_id=None):
     """ Provides a count of tasks which are running on marathon.  The default
         app_id is None which provides a count of all tasks.
     """
     client = marathon.create_client()
     tasks = client.get_tasks(app_id)
     return len(tasks)
+
+
+def commaify(number):
+    return '{:,}'.format(number)
+
+
+def pretty_duration_safe(duration):
+    if duration is None:
+        return None
+
+    return pretty_duration(duration)
+
+
+def clean_root_marathon():
+    stop_root_marathon()
+    delete_zk_node('/marathon/leader-curator/')
+    delete_zk_node('/marathon/leader/')
+    delete_zk_node('/marathon/state/')
+    delete_zk_node('/marathon/')
+    start_root_marathon()
+    wait_for_marathon_up()
+
+
+def stop_root_marathon():
+    run_command_on_master('sudo systemctl stop dcos-marathon')
+
+
+def start_root_marathon():
+    run_command_on_master('sudo systemctl start dcos-marathon')

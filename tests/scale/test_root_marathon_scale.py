@@ -29,7 +29,8 @@ test_log = []
   (1, 1000),
   (1, 5000),
   (1, 10000),
-  (1, 25000)
+  (1, 25000),
+  (1, 50000)
 ])
 def test_instance_scale(num_apps, num_instances):
     """ Runs scale tests on `num_instances` of usually 1 app.
@@ -37,33 +38,33 @@ def test_instance_scale(num_apps, num_instances):
     run_test('root', 'apps', 'instances', num_apps, num_instances)
 
 
-@pytest.mark.parametrize("num_apps, num_instances", [
-  (1, 1),
-  (10, 1),
-  (100, 1),
-  (500, 1),
-  (1000, 1),
-  (5000, 1),
-  (10000, 1),
-  (25000, 1)
-])
-def test_count_scale(num_apps, num_instances):
-    """ Runs scale test on `num_apps` usually 1 instance each.
-    """
-    run_test('root', 'apps', 'count', num_apps, num_instances)
-
-
-@pytest.mark.parametrize("num_apps, num_instances", [
-  (1, 1),
-  (10, 1),
-  (100, 1),
-  (500, 1),
-  (1000, 1)
-])
-def test_group_scale(num_apps, num_instances):
-    """ Runs scale test on `num_apps` usually 1 instance each deploy as a group.
-    """
-    run_test('root', 'apps', 'group', num_apps, num_instances)
+# @pytest.mark.parametrize("num_apps, num_instances", [
+#   (1, 1),
+#   (10, 1),
+#   (100, 1),
+#   (500, 1),
+#   (1000, 1),
+#   (5000, 1),
+#   (10000, 1),
+#   (25000, 1)
+# ])
+# def test_count_scale(num_apps, num_instances):
+#     """ Runs scale test on `num_apps` usually 1 instance each.
+#     """
+#     run_test('root', 'apps', 'count', num_apps, num_instances)
+#
+#
+# @pytest.mark.parametrize("num_apps, num_instances", [
+#   (1, 1),
+#   (10, 1),
+#   (100, 1),
+#   (500, 1),
+#   (1000, 1)
+# ])
+# def test_group_scale(num_apps, num_instances):
+#     """ Runs scale test on `num_apps` usually 1 instance each deploy as a group.
+#     """
+#     run_test('root', 'apps', 'group', num_apps, num_instances)
 
 
 ##############
@@ -76,8 +77,8 @@ def run_test(marathon, launch_type, test_type, num_apps, num_instances):
     current_test = start_test(test_name)
     test_log.append(current_test)
     need = scaletest_resources(current_test)
-    # TODO: why marathon stops at 80%
-    if need > (available_resources() * 0.8):
+
+    if need > (available_resources()):
         current_test.skip('insufficient resources')
         return
     if previous_style_test_failed(current_test):
@@ -105,6 +106,7 @@ def previous_style_test_failed(current_test):
 def setup_module(module):
     delete_all_apps_wait()
     cluster_info()
+    print(ee_version())
     print('testing root marathon')
     print(available_resources())
 
@@ -118,9 +120,15 @@ def teardown_module(module):
 
 
 def get_metadata():
+    version = ee_version()
+
     metadata = {
         'marathon': 'root'
     }
+
+    if version is not None:
+        metadata['security'] = version
+
     return metadata
 
 
