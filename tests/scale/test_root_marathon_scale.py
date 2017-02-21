@@ -35,8 +35,10 @@ test_log = []
 def test_instance_scale(num_apps, num_instances):
     """ Runs scale tests on `num_instances` of usually 1 app.
     """
-    run_test('root', 'apps', 'instances', num_apps, num_instances)
 
+    current_test = initalize_test('root', 'apps', 'instances', num_apps, num_instances)
+    instance_test_app(current_test)
+    log_current_test(current_test)
 
 # @pytest.mark.parametrize("num_apps, num_instances", [
 #   (1, 1),
@@ -72,7 +74,22 @@ def test_instance_scale(num_apps, num_instances):
 ##############
 
 
-def run_test(marathon, launch_type, test_type, num_apps, num_instances):
+def initalize_test(marathon_name='root', under_test='apps', style='instances', num_apps=1, num_instances=1):
+
+    current_test = create_test_object(marathon_name, under_test, style, num_apps, num_instances)
+    test_log.append(current_test)
+    need = scaletest_resources(current_test)
+
+    if need > (available_resources()):
+        current_test.skip('insufficient resources')
+
+    if previous_style_test_failed(current_test):
+        current_test.skip('smaller scale failed')
+
+    return current_test
+
+
+def run_test(marathon_name, launch_type, test_type, num_apps, num_instances):
     test_name = 'test_{}_{}_{}_{}_{}'.format(marathon, launch_type, test_type, num_apps, num_instances)
     current_test = start_test(test_name)
     test_log.append(current_test)
@@ -90,18 +107,31 @@ def run_test(marathon, launch_type, test_type, num_apps, num_instances):
     time = scale_test_apps(current_test)
 
     if "failed" in current_test.status:
-        type_test_failed[get_style_key(current_test)] = True
+        type_test_failed[get_test_style_key_base(current_test)] = True
 
 
-def get_style_key(current_test):
+def get_test_style_key_base(current_test):
     """ The style key is historical and is the key to recording test results.
     For root marathon the key is `root_instances` or `root_group`.
     """
-    return '{}_{}'.format(current_test.mom, current_test.style)
+    return get_style_key_base(current_test.mom, current_test.style)
+
+
+def get_test_key(current_test, key):
+    return get_key(current_test.mom, current_test.style, key)
+
+
+def get_style_key_base(marathon_name, style):
+    return '{}_{}'.format(marathon_name, style)
+
+
+def get_key(marathon_name, style, key):
+    return "{}_{}".format(get_style_key_base(marathon_name, style), key)
 
 
 def previous_style_test_failed(current_test):
-    return type_test_failed.get(get_style_key(current_test), False)
+    return type_test_failed.get(get_test_style_key_base(current_test), False)
+
 
 def setup_module(module):
     delete_all_apps_wait()
@@ -132,11 +162,21 @@ def get_metadata():
     return metadata
 
 
+def log_current_test(current_test):
+    print(current_test)
+    current_test.log_events()
+    current_test.log_stats()
+    print('')
+
+
 def collect_stats():
     stats = {
-        'root_instances': [],
         'root_instances_target': [],
         'root_instances_max': [],
+        'root_instances_deploy_time': [],
+        'root_instances_human_deploy_time': [],
+        'root_instances_launch_status': [],
+        'root_instances_deployment_status': [],
         'root_count': [],
         'root_count_target': [],
         'root_count_max': [],
@@ -149,14 +189,33 @@ def collect_stats():
         scale_test.log_events()
         scale_test.log_stats()
         print('')
-        stats.get(get_style_key(scale_test)).append(scale_test.deploy_time)
-        target_key = '{}_target'.format(get_style_key(scale_test))
-        if 'instances' in target_key:
-            stats.get(target_key).append(scale_test.instance)
-        else:
-            stats.get(target_key).append(scale_test.count)
+
+        key = get_test_key(scale_test, 'target')
+        stats.get(key).append(scale_test.target)
+
+        key = get_test_key(scale_test, 'max')
+        stats.get(key).append(scale_test.deploy_results.current_scale)
+
+        key = get_test_key(scale_test, 'deploy_time')
+        stats.get(key).append(scale_test.test_time)
+
+        key = get_test_key(scale_test, 'human_deploy_time')
+        stats.get(key).append(pretty_duration_safe(scale_test.test_time))
+
+        key = get_test_key(scale_test, 'launch_status')
+        stats.get(key).append(pass_status(scale_test.launch_results.success))
+
+        key = get_test_key(scale_test, 'deployment_status')
+        stats.get(key).append(pass_status(scale_test.deploy_results.success))
 
     return stats
+
+
+def pass_status(successful):
+    if successful:
+        return 'p'
+    else:
+        return 'f'
 
 
 def read_csv(filename='scale-test.csv'):
@@ -168,15 +227,19 @@ def write_csv(stats, filename='scale-test.csv'):
     with open(filename, 'w') as f:
         w = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
         write_stat_lines(f, w, stats, 'root', 'instances')
-        write_stat_lines(f, w, stats, 'root', 'count')
-        write_stat_lines(f, w, stats, 'root', 'group')
+        # write_stat_lines(f, w, stats, 'root', 'count')
+        # write_stat_lines(f, w, stats, 'root', 'group')
 
 
-def write_stat_lines(f, w, stats, marathon, test_type):
+def write_stat_lines(f, w, stats, marathon_name, test_type):
         f.write('Marathon: {}, {}'.format('root', test_type))
         f.write('\n')
-        w.writerow(stats['{}_{}_target'.format(marathon, test_type)])
-        w.writerow(stats['{}_{}'.format(marathon, test_type)])
+        w.writerow(stats[get_key(marathon_name, test_type, 'target')])
+        w.writerow(stats[get_key(marathon_name, test_type, 'max')])
+        w.writerow(stats[get_key(marathon_name, test_type, 'deploy_time')])
+        w.writerow(stats[get_key(marathon_name, test_type, 'human_deploy_time')])
+        w.writerow(stats[get_key(marathon_name, test_type, 'launch_status')])
+        w.writerow(stats[get_key(marathon_name, test_type, 'deployment_status')])
         f.write('\n')
 
 
