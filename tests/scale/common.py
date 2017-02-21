@@ -600,18 +600,19 @@ def uninstall_mom():
     delete_zk_node('universe/marathon-user')
 
 
-def wait_for_marathon_up(test_obj=None, timeout= 60 * 5):
+def wait_for_marathon_up(test_obj=None, timeout=60 * 5):
     if test_obj is None or 'root' in test_obj.mom:
         wait_for_service_endpoint('marathon', timeout)
     else:
         wait_for_service_endpoint('marathon-user')
 
 
-def quiet_wait_for_marathon_up(test_obj=None, timeout= 60 * 5):
+def quiet_wait_for_marathon_up(test_obj=None, timeout=60 * 5):
     try:
         wait_for_marathon_up(test_obj, timeout)
     except:
         pass
+
 
 def ensure_test_mom(test_obj):
     valid = ensure_mom_version(test_obj.mom_version)
@@ -735,7 +736,6 @@ class DeployResults(object):
         self.current_test = this_test
         self.end_time = None
 
-
     def __str__(self):
         return "deploy  failure: {} avg response time: {} last response time: {} scale: {}".format(
             self.failure,
@@ -773,7 +773,6 @@ class DeployResults(object):
         if time.time() > self.end_time:
             raise DCOSNotScalingException("Deployment Scale of {} hasn't changed for {} mins".format(task_count, minutes))
 
-
     def is_target_reached(self):
         return self.current_scale >= self.target
 
@@ -790,7 +789,6 @@ class DeployResults(object):
         self.current_response_time(time.time())
         self.current_test.add_event('deployment successful')
         self.current_test.add_event('scale reached: {}'.format(self.current_scale))
-
 
     def failed(self, message=''):
         self.current_test.failed(message)
@@ -966,6 +964,7 @@ def outstanding_deployments():
 def is_deployment_active():
     client = marathon.create_client()
     return len(client.get_deployments()) > 0
+
 
 def current_scale():
     """ Provides a count of tasks which are running on Mesos.  The default
