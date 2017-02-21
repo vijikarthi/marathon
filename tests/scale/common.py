@@ -426,7 +426,7 @@ def abort_deployment_check(test_obj):
     """
     # no test takes longer than 3 hours regardless
     hours = 3
-    if elapse_time(test_obj.start_time) > hours * 60 * 60:
+    if elapse_time(test_obj.start) > hours * 60 * 60:
         test_obj.add_event("Test taking longer than {} hours".format(hours))
         return True
 

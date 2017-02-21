@@ -136,7 +136,6 @@ def previous_style_test_failed(current_test):
 def setup_module(module):
     delete_all_apps_wait()
     cluster_info()
-    print(ee_version())
     print('testing root marathon')
     print(available_resources())
 
