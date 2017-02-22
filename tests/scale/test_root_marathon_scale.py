@@ -30,7 +30,7 @@ test_log = []
   (1, 5000),
   (1, 10000),
   (1, 25000),
-  (1, 50000)
+  (1, 47000)
 ])
 def test_instance_scale(num_apps, num_instances):
     """ Runs scale tests on `num_instances` of usually 1 app.
