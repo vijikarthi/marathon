@@ -102,6 +102,10 @@ def launch_apps(count=1, instances=1):
         client.add_app(app(num, instances))
 
 
+def launch_group_test(test_obj):
+    launch_group(test_obj.count, test_obj.instance)
+
+
 def launch_group(count=1, instances=1):
     client = marathon.create_client()
     client.create_group(group(count, instances))
@@ -253,47 +257,48 @@ def group_test_app(test_obj):
 
     :param test_obj: Is of type ScaleTest and defines the criteria for the test and logs the results and events of the test.
     """
-    # make sure no apps currently
-    try:
-        delete_all_apps_wait2()
-    except:
-        pass
+    if test_obj.skipped:
+        return
 
-    test_obj.start = time.time()
-    starting_tasks = get_current_tasks()
-    count = test_obj.count
-    instances = test_obj.instance
-
-    # launch apps
-    launch_complete = True
     try:
-        launch_group(count, instances)
-    except:
-        test_obj.failed('Failure to launched (but we still will wait for deploys)')
-        launch_complete = False
         wait_for_marathon_up(test_obj)
+        delete_all_apps_wait2()
+        wait_for_marathon_up(test_obj)
+    except:
         pass
 
-    # time launch
+    # launch
+    test_obj.start_test()
+    launch_results = test_obj.launch_results
+    try:
+        launch_group_test(test_obj)
+    except Exception as e:
+        print(e)
+        # service unavail == wait for marathon
+        launch_results.failed('Failure to launched (but we still will wait for deploys)')
+        wait_for_marathon_up(test_obj)
+    else:
+        launch_results.completed()
+
+    # deployment
     try:
         time_deployment2(test_obj)
-        launch_complete = True
     except Exception as e:
-        assert False
+        msg = str(e)
+        print("************ {} *********".format(msg))
+        test_obj.deploy_results.failed(msg)
 
-    current_tasks = get_current_app_tasks(starting_tasks)
-    test_obj.add_event('undeploying {} tasks'.format(current_tasks))
-
-    # delete apps
+    # undeploy
+    wait_for_marathon_up(test_obj)
     delete_all_apps_wait2(test_obj)
+    wait_for_marathon_up(test_obj)
 
-    assert launch_complete
 
 
 def delete_all_apps_wait2(test_obj=None, msg='undeployment failure'):
 
-    if test_obj is not None and test_obj.current_scale > 0:
-        test_obj.add_event('undeploying {} tasks'.format(test_obj.current_scale))
+    if test_obj is not None and test_obj.deploy_results.current_scale > 0:
+        test_obj.add_event('undeploying {} tasks'.format(test_obj.deploy_results.current_scale))
 
     try:
         delete_all_apps()

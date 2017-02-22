@@ -54,19 +54,23 @@ def test_instance_scale(num_apps, num_instances):
 #     """ Runs scale test on `num_apps` usually 1 instance each.
 #     """
 #     run_test('root', 'apps', 'count', num_apps, num_instances)
-#
-#
-# @pytest.mark.parametrize("num_apps, num_instances", [
-#   (1, 1),
-#   (10, 1),
-#   (100, 1),
-#   (500, 1),
-#   (1000, 1)
-# ])
-# def test_group_scale(num_apps, num_instances):
-#     """ Runs scale test on `num_apps` usually 1 instance each deploy as a group.
-#     """
-#     run_test('root', 'apps', 'group', num_apps, num_instances)
+
+
+@pytest.mark.parametrize("num_apps, num_instances", [
+  (1, 1),
+  (10, 1),
+  (100, 1),
+  (500, 1),
+  (1000, 1)
+])
+def test_group_scale(num_apps, num_instances):
+    """ Runs scale test on `num_apps` usually 1 instance each deploy as a group.
+    """
+
+    current_test = initalize_test('root', 'apps', 'group', num_apps, num_instances)
+    group_test_app(current_test)
+    log_current_test(current_test)
+
 
 
 ##############
@@ -179,8 +183,12 @@ def collect_stats():
         'root_count': [],
         'root_count_target': [],
         'root_count_max': [],
-        'root_group': [],
-        'root_group_target': []
+        'root_group_target': [],
+        'root_group_max': [],
+        'root_group_deploy_time': [],
+        'root_group_human_deploy_time': [],
+        'root_group_launch_status': [],
+        'root_group_deployment_status': []
     }
 
     for scale_test in test_log:
@@ -202,15 +210,17 @@ def collect_stats():
         stats.get(key).append(pretty_duration_safe(scale_test.test_time))
 
         key = get_test_key(scale_test, 'launch_status')
-        stats.get(key).append(pass_status(scale_test.launch_results.success))
+        stats.get(key).append(pass_status(scale_test, scale_test.launch_results.success))
 
         key = get_test_key(scale_test, 'deployment_status')
-        stats.get(key).append(pass_status(scale_test.deploy_results.success))
+        stats.get(key).append(pass_status(scale_test, scale_test.deploy_results.success))
 
     return stats
 
 
-def pass_status(successful):
+def pass_status(test, successful):
+    if test.skipped:
+        return 's'
     if successful:
         return 'p'
     else:
@@ -227,7 +237,7 @@ def write_csv(stats, filename='scale-test.csv'):
         w = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
         write_stat_lines(f, w, stats, 'root', 'instances')
         # write_stat_lines(f, w, stats, 'root', 'count')
-        # write_stat_lines(f, w, stats, 'root', 'group')
+        write_stat_lines(f, w, stats, 'root', 'group')
 
 
 def write_stat_lines(f, w, stats, marathon_name, test_type):
