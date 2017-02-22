@@ -72,7 +72,6 @@ def test_group_scale(num_apps, num_instances):
     log_current_test(current_test)
 
 
-
 ##############
 # End Test Section
 ##############
@@ -84,7 +83,8 @@ def initalize_test(marathon_name='root', under_test='apps', style='instances', n
     test_log.append(current_test)
     need = scaletest_resources(current_test)
 
-    if need > (available_resources()):
+    # if need >= (private_resources_available()):
+    if not has_enough_resources(need):
         current_test.skip('insufficient resources')
 
     if previous_style_test_failed(current_test):
@@ -93,13 +93,20 @@ def initalize_test(marathon_name='root', under_test='apps', style='instances', n
     return current_test
 
 
+def has_enough_resources(need):
+    """ this is temporary until shakedown PR 121 is merged
+    """
+    available = private_resources_available()
+    return need.cpus <= available.cpus and need.mem <= available.mem
+
+
 def run_test(marathon_name, launch_type, test_type, num_apps, num_instances):
     test_name = 'test_{}_{}_{}_{}_{}'.format(marathon, launch_type, test_type, num_apps, num_instances)
     current_test = start_test(test_name)
     test_log.append(current_test)
     need = scaletest_resources(current_test)
 
-    if need > (available_resources()):
+    if need > (private_resources_available()):
         current_test.skip('insufficient resources')
         return
     if previous_style_test_failed(current_test):
@@ -141,7 +148,7 @@ def setup_module(module):
     delete_all_apps_wait()
     cluster_info()
     print('testing root marathon')
-    print(available_resources())
+    print("private resources: {}".format(private_resources_available()))
 
 
 def teardown_module(module):

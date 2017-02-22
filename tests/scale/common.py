@@ -294,7 +294,6 @@ def group_test_app(test_obj):
     wait_for_marathon_up(test_obj)
 
 
-
 def delete_all_apps_wait2(test_obj=None, msg='undeployment failure'):
 
     if test_obj is not None and test_obj.deploy_results.current_scale > 0:
@@ -1014,3 +1013,11 @@ def stop_root_marathon():
 
 def start_root_marathon():
     run_command_on_master('sudo systemctl start dcos-marathon')
+
+
+def private_resources_available():
+    return available_resources() - public_resources_available()
+
+
+def public_resources_available():
+    return len(get_public_agents()) * Resources(4, 14018.0)
