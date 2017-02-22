@@ -237,10 +237,6 @@ def instance_test_app(test_obj):
         print("************ {} *********".format(msg))
         test_obj.deploy_results.failed(msg)
 
-    wait_for_marathon_up(test_obj)
-    current_tasks = current_scale()
-    test_obj.add_event('undeploying {} tasks'.format(current_tasks))
-
     # undeploy
     wait_for_marathon_up(test_obj)
     delete_all_apps_wait2(test_obj)
@@ -296,10 +292,14 @@ def group_test_app(test_obj):
 
 def delete_all_apps_wait2(test_obj=None, msg='undeployment failure'):
 
+    if test_obj is not None and test_obj.current_scale > 0:
+        test_obj.add_event('undeploying {} tasks'.format(test_obj.current_scale))
+
     try:
         delete_all_apps()
     except Exception as e:
         if test_obj is not None:
+            msg = '{}: {}'.format(msg, str(e))
             test_obj.add_event(msg)
         pass
 
@@ -309,7 +309,7 @@ def delete_all_apps_wait2(test_obj=None, msg='undeployment failure'):
     try:
         undeployment_wait(test_obj)
     except Exception as e:
-        msg = str(e)
+        msg = '{}: {}'.format(msg, str(e))
         if test_obj is not None:
             test_obj.add_event(msg)
         assert False, msg
